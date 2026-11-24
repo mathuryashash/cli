@@ -290,6 +290,11 @@ struct LocalSelectionArgs {
     include_untracked: bool,
 }
 
+/// Reads a repository-relative path argument in Git's `/` form.
+fn repository_path(value: &str) -> Result<String, std::convert::Infallible> {
+    Ok(git::repository_path(value))
+}
+
 #[derive(Debug, Args)]
 struct ReviewArgs {
     /// Print the JSON result schema without requesting or reading a review.
@@ -312,6 +317,7 @@ struct ReviewArgs {
     commit: Option<String>,
     /// Review the complete contents of up to twenty tracked files at --commit.
     #[arg(long, value_name = "PATH", num_args = 1..=20, requires = "commit",
+        value_parser = repository_path,
         conflicts_with_all = ["pr", "range", "staged", "include_untracked", "allow_path"])]
     files: Vec<String>,
     /// Review the change from BASE to HEAD, both pushed, BASE an ancestor of
@@ -323,7 +329,12 @@ struct ReviewArgs {
     )]
     range: Option<String>,
     /// Review only this literal repository-relative file in the local patch.
-    #[arg(long, value_name = "PATH", conflicts_with_all = ["pr", "commit", "range", "files"])]
+    #[arg(
+        long,
+        value_name = "PATH",
+        value_parser = repository_path,
+        conflicts_with_all = ["pr", "commit", "range", "files"]
+    )]
     path: Option<String>,
     /// Re-verify these open findings of one pull request against the local
     /// changes, and print each one's outcome. The outcome is local: the pull
@@ -348,7 +359,7 @@ struct ReviewArgs {
     fail_on: Option<Severity>,
     /// Include secret-shaped patch content from this exact repository-relative
     /// path. Repeat for more paths; each override applies only to local review.
-    #[arg(long, value_name = "PATH", conflicts_with = "pr")]
+    #[arg(long, value_name = "PATH", value_parser = repository_path, conflicts_with = "pr")]
     allow_path: Vec<String>,
     #[command(flatten)]
     repository: RepositoryArgs,

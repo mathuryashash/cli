@@ -978,3 +978,94 @@ async fn local_path_never_expands_a_file_replaced_by_a_directory() {
     assert_eq!(checkout.index().await, index);
     server.close().await;
 }
+
+/// Windows shells, `PowerShell` tab completion and editors' Copy Relative Path
+/// write `\` between segments. Git for Windows never checks out a path that
+/// contains `\`, so the same file must be selected, overridden or named as
+/// with `/`, and the request must carry Git's `/` form.
+#[cfg(windows)]
+#[tokio::test]
+async fn windows_backslash_paths_select_the_same_tracked_file() {
+    let github = format!("ghp_{}", "C".repeat(36));
+    let checkout = Checkout::new(&[
+        ("nested/file.txt", "base\n"),
+        ("other.txt", "base\n"),
+        ("config/token.txt", "base\n"),
+    ])
+    .await;
+    checkout.write("nested/file.txt", "changed\n").await;
+    checkout.write("other.txt", "excluded\n").await;
+    let server = Server::start(true).await;
+    let output = checkout
+        .review(&server, &[], &["--path", r"nested\file.txt"])
+        .await;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    {
+        let uploads = server.fixture.uploads.lock().unwrap();
+        assert_eq!(uploads.len(), 1);
+        let patch = uploads[0]["patch"].as_str().unwrap();
+        assert!(patch.contains("diff --git a/nested/file.txt b/nested/file.txt"));
+        assert!(!patch.contains("excluded"), "{patch}");
+    }
+    server.close().await;
+
+    // Traversal, directories and `.` segments stay refused when written with
+    // `\`, exactly as they are with `/`.
+    let server = Server::start(true).await;
+    for path in [
+        r".\nested\file.txt",
+        r"..\file.txt",
+        r"nested\..\nested\file.txt",
+        "nested",
+        r"nested\",
+    ] {
+        let output = checkout.review(&server, &[], &["--path", path]).await;
+        assert!(!output.status.success(), "{path}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr)
+                .contains("exact repository-relative tracked file")
+        );
+    }
+    server.assert_no_requests();
+
+    // A `\` override allows exactly the file the refusal names with `/`.
+    checkout.write("other.txt", "base\n").await;
+    checkout
+        .write("config/token.txt", &format!("first\n{github}\n"))
+        .await;
+    let refused = checkout.review(&server, &[], &[]).await;
+    assert_refusal(&refused, "\"config/token.txt\":2 (new line)", &github);
+    server.assert_no_requests();
+    let allowed = checkout.review(&server, &[r"config\token.txt"], &[]).await;
+    assert!(
+        allowed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&allowed.stderr)
+    );
+    assert_eq!(server.fixture.uploads.lock().unwrap().len(), 1);
+    server.close().await;
+
+    // Named whole files reach the server in Git's `/` form.
+    let server = Server::start(true).await;
+    let output = checkout
+        .review(
+            &server,
+            &[],
+            &["--commit", "HEAD", "--files", r"nested\file.txt"],
+        )
+        .await;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        *server.fixture.file_requests.lock().unwrap(),
+        vec![json!({ "commit_sha": checkout.base, "paths": ["nested/file.txt"] })]
+    );
+    server.close().await;
+}

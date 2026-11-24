@@ -123,6 +123,23 @@ pub async fn named_files(
     Ok((commit, selected))
 }
 
+/// A repository-relative path as Git writes it, from a command-line value.
+///
+/// Windows shells and editors write `\` between path segments: `VS Code`'s
+/// Copy Relative Path gives `src\main.rs`. Git separates segments with `/`
+/// on every platform, and Git for Windows never checks out a path containing
+/// `\`, so there each `\` becomes `/`. Elsewhere `\` is an ordinary file name
+/// byte and the value is kept as written. Every other check is unchanged:
+/// `.`, `..` and empty segments are still refused, and the result must still
+/// name one exact tracked file.
+pub fn repository_path(value: &str) -> String {
+    if cfg!(windows) {
+        value.replace('\\', "/")
+    } else {
+        value.to_owned()
+    }
+}
+
 /// The change one commit makes: the commit against its first parent.
 pub async fn pushed_commit(dir: &Path, revision: &str) -> Result<PushedChange, GitError> {
     let head_commit_sha = resolve(dir, revision).await?;
@@ -567,6 +584,17 @@ pub fn full_name(url: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn repository_paths_use_git_separators_only_where_backslash_cannot_be_a_name() {
+        let path = repository_path(r".\nested\file.txt");
+        if cfg!(windows) {
+            assert_eq!(path, "./nested/file.txt");
+        } else {
+            assert_eq!(path, r".\nested\file.txt");
+        }
+        assert_eq!(repository_path("a/b.txt"), "a/b.txt");
+    }
 
     #[test]
     fn reads_owner_and_name_from_remote_urls() {
